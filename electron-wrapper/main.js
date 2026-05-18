@@ -1,9 +1,10 @@
-const { app, BrowserWindow, Menu, shell } = require("electron");
+const { app, BrowserWindow, Menu, protocol, shell, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const http = require("http");
+const url = require("url");
 
 const APP_DIR = path.join(__dirname, "app");
+const SCHEME = "excalidraw";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -27,47 +28,60 @@ const MIME = {
   ".txt": "text/plain; charset=utf-8",
 };
 
-function startServer() {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      try {
-        const url = new URL(req.url, "http://localhost");
-        let pathname = decodeURIComponent(url.pathname);
-        if (pathname.endsWith("/")) {
-          pathname += "index.html";
-        }
-        let filePath = path.join(APP_DIR, pathname);
-        if (!filePath.startsWith(APP_DIR)) {
-          res.writeHead(403);
-          res.end("Forbidden");
-          return;
-        }
-        if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-          // SPA fallback to index.html
-          filePath = path.join(APP_DIR, "index.html");
-        }
-        const ext = path.extname(filePath).toLowerCase();
-        const mime = MIME[ext] || "application/octet-stream";
-        res.writeHead(200, {
-          "Content-Type": mime,
-          "Cache-Control": "no-cache",
-        });
-        fs.createReadStream(filePath).pipe(res);
-      } catch (err) {
-        res.writeHead(500);
-        res.end(String(err));
-      }
+// Must run before app.whenReady() so the scheme is treated like https for
+// origin purposes — gives us a stable origin (e.g. excalidraw://app/) so the
+// renderer's localStorage / IndexedDB persist across launches.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      allowServiceWorkers: true,
+      stream: true,
+    },
+  },
+]);
+
+function resolveFile(requestUrl) {
+  const { pathname } = new url.URL(requestUrl);
+  let relative = decodeURIComponent(pathname);
+  if (relative.endsWith("/")) {
+    relative += "index.html";
+  }
+  let filePath = path.join(APP_DIR, relative);
+  if (!filePath.startsWith(APP_DIR)) {
+    return null;
+  }
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    // SPA fallback to index.html for any unknown route
+    filePath = path.join(APP_DIR, "index.html");
+  }
+  return filePath;
+}
+
+function registerProtocol() {
+  protocol.handle(SCHEME, async (request) => {
+    const filePath = resolveFile(request.url);
+    if (!filePath) {
+      return new Response("Forbidden", { status: 403 });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const mime = MIME[ext] || "application/octet-stream";
+    const fileUrl = url.pathToFileURL(filePath).toString();
+    const response = await net.fetch(fileUrl);
+    return new Response(response.body, {
+      status: 200,
+      headers: { "Content-Type": mime, "Cache-Control": "no-cache" },
     });
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      resolve(port);
-    });
-    server.on("error", reject);
   });
 }
 
 async function createWindow() {
-  const port = await startServer();
+  registerProtocol();
+
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -77,15 +91,18 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Explicit partition makes the storage location predictable and
+      // persistent for the renderer's localStorage / IDB.
+      partition: "persist:main",
     },
   });
 
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+  win.webContents.setWindowOpenHandler(({ url: openUrl }) => {
+    shell.openExternal(openUrl);
     return { action: "deny" };
   });
 
-  win.loadURL(`http://127.0.0.1:${port}/`);
+  win.loadURL(`${SCHEME}://app/`);
 }
 
 app.whenReady().then(createWindow);
