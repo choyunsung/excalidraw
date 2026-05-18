@@ -9,6 +9,7 @@ import type { Theme } from "@excalidraw/element/types";
 import { LanguageList } from "../app-language/LanguageList";
 
 import { saveDebugState } from "./DebugCanvas";
+import { StylePresets } from "./StylePresets";
 
 export const AppMainMenu: React.FC<{
   onCollabDialogOpen: () => any;
@@ -53,6 +54,7 @@ export const AppMainMenu: React.FC<{
         </MainMenu.Item>
       )}
       <MainMenu.Separator />
+      <StylePresets />
       <MainMenu.DefaultItems.Preferences />
       <MainMenu.DefaultItems.ToggleTheme
         allowSystemTheme
